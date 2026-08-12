@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>Cousins' Poker</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>♠️</text></svg>" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- HOME: create or join -->
+  <section id="screen-home" class="screen">
+    <div class="home-card">
+      <h1>♠️ Cousins' Poker ♣️</h1>
+      <p class="subtitle">A private No-Limit Hold'em tournament — just for family.</p>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="join">Join a game</button>
+        <button class="tab-btn" data-tab="create">Start a new game</button>
+      </div>
+
+      <form id="form-join" class="tab-panel active">
+        <label>Table code
+          <input id="join-code" maxlength="5" placeholder="e.g. K7QRT" autocomplete="off" autocapitalize="characters" />
+        </label>
+        <label>Your name
+          <input id="join-name" maxlength="20" placeholder="e.g. Ally" autocomplete="off" />
+        </label>
+        <button type="submit" class="btn primary">Join table</button>
+      </form>
+
+      <form id="form-create" class="tab-panel">
+        <label>Tournament name
+          <input id="create-tname" maxlength="40" placeholder="Cousins' Poker Night" autocomplete="off" />
+        </label>
+        <label>Your name (you'll host)
+          <input id="create-hostname" maxlength="20" placeholder="e.g. Ally" autocomplete="off" />
+        </label>
+        <div class="row2">
+          <label>Starting stack
+            <input id="create-stack" type="number" min="500" step="500" value="10000" />
+          </label>
+          <label>Blind level (min)
+            <input id="create-level" type="number" min="1" max="60" value="15" />
+          </label>
+        </div>
+        <button type="submit" class="btn primary">Create table</button>
+      </form>
+
+      <p id="home-error" class="error hidden"></p>
+    </div>
+  </section>
+
+  <!-- LOBBY: waiting room before the host starts -->
+  <section id="screen-lobby" class="screen">
+    <div class="lobby-card">
+      <h2 id="lobby-title">Cousins' Poker Night</h2>
+      <p class="lobby-hint">Share this code with your cousins:</p>
+      <div class="table-code" id="lobby-code">-----</div>
+      <button id="btn-copy-link" class="btn ghost small">Copy invite link</button>
+
+      <h3>Players at the table</h3>
+      <ul id="lobby-players" class="player-list"></ul>
+
+      <div id="lobby-host-controls" class="hidden">
+        <button id="btn-start-tournament" class="btn primary large">Start tournament</button>
+        <p class="lobby-hint">Need at least 2 players.</p>
+      </div>
+      <p id="lobby-waiting" class="lobby-hint hidden">Waiting for the host to start the game…</p>
+    </div>
+  </section>
+
+  <!-- GAME: the poker table -->
+  <section id="screen-game" class="screen">
+    <header class="game-topbar">
+      <div class="blind-info">
+        <span id="blind-level">Level 1</span>
+        <span id="blind-amounts">25 / 50</span>
+        <span id="blind-timer">15:00</span>
+      </div>
+      <button id="btn-toggle-log" class="btn ghost small">Hand log</button>
+    </header>
+
+    <div class="table-wrap">
+      <div class="poker-table" id="poker-table">
+        <div class="board" id="board">
+          <div class="pot" id="pot-amount">Pot: 0</div>
+          <div class="community-cards" id="community-cards"></div>
+        </div>
+        <!-- seats injected here -->
+      </div>
+    </div>
+
+    <div id="action-bar" class="action-bar hidden">
+      <div class="my-hole-cards" id="my-hole-cards"></div>
+      <div class="action-buttons" id="action-buttons"></div>
+      <div id="raise-controls" class="raise-controls hidden">
+        <input type="range" id="raise-slider" min="0" max="0" step="1" />
+        <div class="raise-row">
+          <button class="btn ghost small" data-preset="min">Min</button>
+          <button class="btn ghost small" data-preset="half">½ Pot</button>
+          <button class="btn ghost small" data-preset="pot">Pot</button>
+          <button class="btn ghost small" data-preset="allin">All-in</button>
+          <input type="number" id="raise-amount" />
+          <button id="btn-confirm-raise" class="btn primary small">Raise</button>
+        </div>
+      </div>
+    </div>
+
+    <aside id="log-panel" class="log-panel hidden">
+      <div class="log-panel-header">
+        <h3>Hand log</h3>
+        <button id="btn-close-log" class="btn ghost small">✕</button>
+      </div>
+      <ul id="log-list"></ul>
+      <form id="form-chat" class="chat-form">
+        <input id="chat-input" maxlength="200" placeholder="Say something…" autocomplete="off" />
+        <button type="submit" class="btn ghost small">Send</button>
+      </form>
+    </aside>
+
+    <button id="btn-standings" class="btn ghost small standings-toggle">Standings</button>
+    <aside id="standings-panel" class="standings-panel hidden">
+      <div class="log-panel-header">
+        <h3>Standings</h3>
+        <button id="btn-close-standings" class="btn ghost small">✕</button>
+      </div>
+      <ol id="standings-list"></ol>
+    </aside>
+  </section>
+
+  <!-- TOURNAMENT OVER -->
+  <section id="screen-over" class="screen">
+    <div class="home-card">
+      <h1>🏆 Tournament over!</h1>
+      <p id="over-winner" class="subtitle"></p>
+      <h3>Final standings</h3>
+      <ol id="over-standings" class="player-list"></ol>
+      <p class="lobby-hint">Refresh this page and create a new table to play again.</p>
+    </div>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>
