@@ -3,6 +3,9 @@ const handEvaluator = require('./handEvaluator');
 const { randomId } = require('./ids');
 
 const ACTION_TIMEOUT_MS = 60 * 1000; // auto-fold/check a player who goes quiet mid-hand
+const RUNOUT_REVEAL_DELAY_MS = 1600; // pause after flipping all-in hands before the flop lands
+const RUNOUT_STREET_DELAY_MS = 1800; // pause between flop → turn → river on an all-in runout
+const TIME_BANK_MS = 30 * 1000; // extra time a player can claim once per hand
 
 const DEFAULT_BLIND_SCHEDULE = [
   { smallBlind: 25, bigBlind: 50, ante: 0 },
@@ -28,6 +31,27 @@ function makeCardsPretty(cards) {
   return cards; // client renders suit/rank from the raw code, kept as-is server-side
 }
 
+const RANK_WORDS = {
+  2: 'Twos', 3: 'Threes', 4: 'Fours', 5: 'Fives', 6: 'Sixes', 7: 'Sevens', 8: 'Eights',
+  9: 'Nines', T: 'Tens', J: 'Jacks', Q: 'Queens', K: 'Kings', A: 'Aces',
+};
+const RANK_SINGULAR = {
+  2: 'Two', 3: 'Three', 4: 'Four', 5: 'Five', 6: 'Six', 7: 'Seven', 8: 'Eight',
+  9: 'Nine', T: 'Ten', J: 'Jack', Q: 'Queen', K: 'King', A: 'Ace',
+};
+
+// Pre-flop description of two hole cards, e.g. "Pocket Jacks" / "Ace-King suited".
+function describeHoleCards(hole) {
+  if (!hole || hole.length < 2) return null;
+  const [a, b] = hole;
+  const ra = a[0], rb = b[0];
+  if (ra === rb) return `Pocket ${RANK_WORDS[ra]}`;
+  const order = '23456789TJQKA';
+  const [hi, lo] = order.indexOf(ra) > order.indexOf(rb) ? [ra, rb] : [rb, ra];
+  const suited = a[1] === b[1] ? ' suited' : '';
+  return `${RANK_SINGULAR[hi]}-${RANK_SINGULAR[lo]}${suited}`;
+}
+
 class Player {
   constructor(id, name, chips) {
     this.id = id;
@@ -46,6 +70,7 @@ class Player {
     this.hasActed = false;
     this.lastAction = null; // e.g. "raise to 300", for the UI
     this.lastSeenAt = Date.now(); // updated on every API call from this player (polling heartbeat)
+    this.timeBankUsedThisHand = false; // one extra-time top-up per hand, like a real client
   }
 }
 
@@ -204,6 +229,11 @@ class Table {
     this.communityCards = [];
     this.pots = [];
     this.bettingRound = 'preflop';
+    // Critical: clear last hand's showdown reveal, or previously-shown players' hole cards
+    // stay visible to everyone for the rest of the tournament.
+    this.showdownReveal = null;
+    this.showdownResults = null;
+    this.dealingRunout = false;
 
     for (const p of this.players.values()) {
       p.holeCards = [];
@@ -213,6 +243,7 @@ class Table {
       p.totalBetInHand = 0;
       p.hasActed = false;
       p.lastAction = null;
+      p.timeBankUsedThisHand = false;
       if (p.chips <= 0 && !p.bustedOut) p.folded = true; // safety
     }
 
@@ -389,10 +420,27 @@ class Table {
     this.actingSince = Date.now();
   }
 
+  // "Extra time" — one top-up per hand for the player currently on the clock.
+  useTimeBank(playerId) {
+    const player = this.players.get(playerId);
+    if (!player) throw new Error('Unknown player.');
+    if (!this.seats[this.actingSeat] || this.seats[this.actingSeat].id !== playerId) {
+      throw new Error("You can only use extra time on your own turn.");
+    }
+    if (player.timeBankUsedThisHand) throw new Error('Extra time already used this hand.');
+    player.timeBankUsedThisHand = true;
+    // The deadline is actingSince + ACTION_TIMEOUT_MS, so pushing actingSince forward
+    // buys exactly TIME_BANK_MS more.
+    this.actingSince += TIME_BANK_MS;
+    this.addLog(`${player.name} used extra time.`);
+    this.notify();
+  }
+
   // Called from the server's periodic tick. If whoever is up has gone quiet for too long
   // (phone locked, lost connection, stepped away), act for them so the table doesn't stall.
   checkActionTimeout() {
     if (this.status !== 'active') return;
+    if (this.dealingRunout) return; // board is running out on a timer; nobody is due to act
     if (!['preflop', 'flop', 'turn', 'river'].includes(this.bettingRound)) return;
     if (this.actingSeat < 0 || !this.seats[this.actingSeat]) return;
     if (!this.actingSince || Date.now() - this.actingSince < ACTION_TIMEOUT_MS) return;
@@ -410,6 +458,7 @@ class Table {
   // Handles: uncontested wins, closing betting rounds, dealing streets, showdown, and the
   // case where remaining players are all-in and the board just needs to run out.
   resolveAutoAdvance() {
+    if (this.dealingRunout) return; // a timed all-in runout is already in progress
     const remaining = this.nonFoldedPlayers();
     if (remaining.length <= 1) {
       this.awardUncontested(remaining[0]);
@@ -465,24 +514,50 @@ class Table {
     this.resolveAutoAdvance();
   }
 
+  // Everyone left is all-in, so there's no more betting — but rather than dumping the whole
+  // board at once, deal it out one street at a time on a timer so the hand actually has some
+  // drama to it. All-in players' hole cards are flipped face-up first (as a real table would),
+  // then flop → turn → river land with a pause between each.
   runOutBoard() {
-    while (this.bettingRound !== 'river' && this.bettingRound !== 'showdown') {
+    this.dealingRunout = true;
+
+    // Flip the all-in players' cards face-up now — they have no more decisions to make, so
+    // there's nothing left to protect, and it's what makes the runout worth watching.
+    this.showdownReveal = this.nonFoldedPlayers().map((p) => ({ playerId: p.id, holeCards: p.holeCards }));
+    this.addLog('All-in — cards on their backs!');
+    this.notify();
+
+    const dealNextStreet = () => {
       if (this.bettingRound === 'preflop') {
-        this.deck.pop();
+        this.deck.pop(); // burn
         this.communityCards.push(this.deck.pop(), this.deck.pop(), this.deck.pop());
         this.bettingRound = 'flop';
+        this.addLog(`— FLOP: ${this.communityCards.join(' ')} —`);
       } else if (this.bettingRound === 'flop') {
         this.deck.pop();
         this.communityCards.push(this.deck.pop());
         this.bettingRound = 'turn';
+        this.addLog(`— TURN: ${this.communityCards.join(' ')} —`);
       } else if (this.bettingRound === 'turn') {
         this.deck.pop();
         this.communityCards.push(this.deck.pop());
         this.bettingRound = 'river';
+        this.addLog(`— RIVER: ${this.communityCards.join(' ')} —`);
       }
-    }
-    this.addLog(`Board runs out: ${this.communityCards.join(' ')}`);
-    this.goToShowdown();
+
+      this.notify();
+
+      if (this.bettingRound === 'river') {
+        this.runoutTimer = setTimeout(() => {
+          this.dealingRunout = false;
+          this.goToShowdown();
+        }, RUNOUT_STREET_DELAY_MS);
+      } else {
+        this.runoutTimer = setTimeout(dealNextStreet, RUNOUT_STREET_DELAY_MS);
+      }
+    };
+
+    this.runoutTimer = setTimeout(dealNextStreet, RUNOUT_REVEAL_DELAY_MS);
   }
 
   computePots() {
@@ -542,10 +617,18 @@ class Table {
         p.chips += payout;
       }
       const winnerNames = winnerIds.map((id) => this.players.get(id).name);
-      const handName = eligible.find((s) => winnerIds.includes(s.playerId)).solved.name;
+      const winningSolved = eligible.find((s) => winnerIds.includes(s.playerId)).solved;
+      const handName = handEvaluator.describe(winningSolved);
       const verb = winnerNames.length > 1 ? 'win' : 'wins';
       this.addLog(`${winnerNames.join(' & ')} ${verb} ${pot.amount} with ${handName}.`);
-      results.push({ potAmount: pot.amount, winnerIds, handName });
+      results.push({
+        potAmount: pot.amount,
+        winnerIds,
+        winnerNames,
+        handName,
+        // The exact 5 cards that made the winning hand, so the UI can highlight them.
+        winningCards: winningSolved.cards,
+      });
     }
 
     const reveal = contenders.map((p) => ({ playerId: p.id, holeCards: p.holeCards }));
@@ -556,6 +639,11 @@ class Table {
     this.bettingRound = 'handover';
     this.showdownReveal = reveal;
     this.showdownResults = results;
+    this.dealingRunout = false;
+    if (this.runoutTimer) {
+      clearTimeout(this.runoutTimer);
+      this.runoutTimer = null;
+    }
 
     // Eliminations: 0-chip players are out. Rank by reverse elimination order.
     const stillIn = this.activePlayers().filter((p) => p.chips > 0);
@@ -634,7 +722,14 @@ class Table {
       dealerSeat: this.dealerSeat,
       smallBlindSeat: this.smallBlindSeat,
       bigBlindSeat: this.bigBlindSeat,
-      actingPlayerId: this.actingSeat >= 0 && this.seats[this.actingSeat] ? this.seats[this.actingSeat].id : null,
+      actingPlayerId:
+        !this.dealingRunout && this.actingSeat >= 0 && this.seats[this.actingSeat]
+          ? this.seats[this.actingSeat].id
+          : null,
+      dealingRunout: !!this.dealingRunout,
+      actionDeadlineMs: this.actingSince && !this.dealingRunout
+        ? Math.max(0, ACTION_TIMEOUT_MS - (Date.now() - this.actingSince))
+        : null,
       currentBet: this.currentBet,
       minRaiseAmount: this.minRaiseAmount,
       pots: this.status === 'active' ? this.computePotsPreview() : [],
@@ -673,7 +768,34 @@ class Table {
       log: this.log.slice(-30),
       showdownResults: this.showdownResults || null,
       maxSeats: this.maxSeats,
+      // What the requesting player currently holds ("Pair of Jacks"), like the readout
+      // every modern client shows under your cards.
+      myHand: this.describeHandFor(playerId),
+      canUseTimeBank: this.canUseTimeBank(playerId),
     };
+  }
+
+  describeHandFor(playerId) {
+    const player = this.players.get(playerId);
+    if (!player || player.folded || player.bustedOut) return null;
+    if (!player.holeCards || player.holeCards.length < 2) return null;
+    const cards = [...player.holeCards, ...this.communityCards];
+    if (cards.length < 5) {
+      // Pre-flop there's no five-card hand yet — describe the hole cards instead.
+      return describeHoleCards(player.holeCards);
+    }
+    try {
+      return handEvaluator.describe(handEvaluator.solve(cards));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  canUseTimeBank(playerId) {
+    const player = this.players.get(playerId);
+    if (!player || this.dealingRunout) return false;
+    if (!this.seats[this.actingSeat] || this.seats[this.actingSeat].id !== playerId) return false;
+    return !player.timeBankUsedThisHand;
   }
 
   computePotsPreview() {

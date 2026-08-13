@@ -126,6 +126,41 @@ function solve(cards) {
   return { category: best.category, tiebreak: best.tiebreak, cards: best.cards, name: nameFor(best.category, best.tiebreak) };
 }
 
+const VALUE_SINGULAR = {
+  2: 'Two', 3: 'Three', 4: 'Four', 5: 'Five', 6: 'Six', 7: 'Seven', 8: 'Eight',
+  9: 'Nine', 10: 'Ten', 11: 'Jack', 12: 'Queen', 13: 'King', 14: 'Ace',
+};
+const VALUE_PLURAL = {
+  2: 'Twos', 3: 'Threes', 4: 'Fours', 5: 'Fives', 6: 'Sixes', 7: 'Sevens', 8: 'Eights',
+  9: 'Nines', 10: 'Tens', 11: 'Jacks', 12: 'Queens', 13: 'Kings', 14: 'Aces',
+};
+
+// Human-readable description of a solved hand, e.g. "Pair of Kings",
+// "Two Pair, Aces & Fives", "King-high Straight" — the readout a poker client shows.
+function describe(solved) {
+  const t = solved.tiebreak;
+  switch (solved.category) {
+    case 8:
+      return t[0] === 14 ? 'Royal Flush' : `${VALUE_SINGULAR[t[0]]}-high Straight Flush`;
+    case 7:
+      return `Four ${VALUE_PLURAL[t[0]]}`;
+    case 6:
+      return `Full House, ${VALUE_PLURAL[t[0]]} full of ${VALUE_PLURAL[t[1]]}`;
+    case 5:
+      return `${VALUE_SINGULAR[t[0]]}-high Flush`;
+    case 4:
+      return `${VALUE_SINGULAR[t[0]]}-high Straight`;
+    case 3:
+      return `Three ${VALUE_PLURAL[t[0]]}`;
+    case 2:
+      return `Two Pair, ${VALUE_PLURAL[t[0]]} & ${VALUE_PLURAL[t[1]]}`;
+    case 1:
+      return `Pair of ${VALUE_PLURAL[t[0]]}`;
+    default:
+      return `${VALUE_SINGULAR[t[0]]} High`;
+  }
+}
+
 // solvedHands: [{ playerId, solved }] -> playerIds that tie for best hand.
 function winners(solvedHands) {
   let bestScore = null;
@@ -135,4 +170,4 @@ function winners(solvedHands) {
   return solvedHands.filter(({ solved }) => compareScore(solved, bestScore) === 0).map((h) => h.playerId);
 }
 
-module.exports = { solve, winners };
+module.exports = { solve, winners, describe };

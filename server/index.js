@@ -164,6 +164,13 @@ const routes = {
     return { ok: true };
   },
 
+  'POST /api/timeBank': async (body) => {
+    const table = getTable(body.tableId);
+    const player = requirePlayer(table, body.token);
+    table.useTimeBank(player.id);
+    return { ok: true };
+  },
+
   'POST /api/chat': async (body) => {
     const table = getTable(body.tableId);
     const player = requirePlayer(table, body.token);
